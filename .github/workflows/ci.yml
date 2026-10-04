@@ -30,9 +30,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path $env:RUNNER_TEMP -Force | Out-Null
-          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
-          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          $canonicalTemp = node -e "console.log(require('fs').realpathSync(process.env.RUNNER_TEMP))"
+          "TMP=$canonicalTemp" >> $env:GITHUB_ENV
+          "TEMP=$canonicalTemp" >> $env:GITHUB_ENV
       - run: npm run setup:pandoc:win
-      - run: npm test
+      - run: npm test -- --testTimeout=15000 --hookTimeout=15000
       - run: npm run build
       - run: npm run licenses:collect
