@@ -26,6 +26,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Use a canonical Windows test directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path $env:RUNNER_TEMP -Force | Out-Null
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - run: npm run setup:pandoc:win
       - run: npm test
       - run: npm run build
       - run: npm run licenses:collect
