@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": ["ES2022"],
+    "rootDir": "src",
+    "outDir": "dist/electron",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node", "electron"]
+  },
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts"],
+  // The canonical outline parser runs in the renderer/worker and uses ESM-only
+  // remark packages. It is checked by tsconfig.json and bundled by Vite.
+  "exclude": ["src/shared/markdown-outline.ts"]
+}

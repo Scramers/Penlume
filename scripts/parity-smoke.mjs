@@ -1,0 +1,143 @@
+import assert from 'node:assert/strict'
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { _electron as electron } from 'playwright'
+
+const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+const temporary = await mkdtemp(path.join(tmpdir(), 'ttypora-parity-'))
+const workspace = path.join(temporary, 'notes')
+const artifacts = path.join(root, 'artifacts')
+const prefix = process.env.TTYPORA_VERIFICATION_PREFIX ?? `parity-${process.env.TTYPORA_PACKAGED_EXE ? 'packaged' : 'source'}`
+assert(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(prefix) && !prefix.includes('..'))
+const artifact = (name) => path.join(artifacts, `parity-${prefix}-${name}`)
+await mkdir(workspace)
+await mkdir(artifacts, { recursive: true })
+const fixture = await readFile(path.join(root, 'tests/fixtures/parity.md'), 'utf8')
+const note = path.join(workspace, 'parity.md')
+await writeFile(note, fixture)
+let application, page
+const pageErrors = []
+try {
+  const packaged = process.env.TTYPORA_PACKAGED_EXE
+  const flags = ['--disable-gpu', '--disable-backgrounding-occluded-windows', '--disable-background-timer-throttling', '--disable-renderer-backgrounding']
+  application = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: packaged ? flags : [...flags, '.'], cwd: root, env: { ...process.env, TTYPORA_SMOKE_TEST: '1', TTYPORA_USER_DATA_PATH: temporary, TTYPORA_SMOKE_WORKSPACE_PATH: workspace } })
+  page = await application.firstWindow()
+  await application.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.show(); window.focus() })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  page.on('pageerror', (error) => { pageErrors.push(String(error)); console.error('Page error:', error) })
+  await page.locator('.ProseMirror').waitFor()
+  const command = (value) => application.evaluate(({ BrowserWindow }, command) => BrowserWindow.getAllWindows()[0].webContents.send('app:command', command), value)
+  await command('open-workspace')
+  await page.locator('.file-tree').getByTitle(note, { exact: true }).click()
+  await page.locator('.front-matter').waitFor()
+  await page.locator('.document-toc a').first().waitFor()
+  assert.equal(await page.locator('.markdown-alert-note').count(), 1)
+  assert.equal(await page.locator('sup[data-type="footnote_reference"]').count(), 1)
+  assert.match(await page.locator('.front-matter-source').innerText(), /tags: \[writing, markdown\]/)
+  assert.equal(await page.getByLabel('HTML 源码').inputValue(), '<div><mark>保留 HTML 源码</mark></div>')
+  await command('save-document')
+  await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent?.includes('没有需要保存'))
+  assert.equal(await readFile(note, 'utf8'), fixture)
+  console.log('Open/save without edits preserves exact source bytes.')
+
+  await page.locator('.ProseMirror > p').last().click()
+  await page.keyboard.press('End')
+  await page.keyboard.insertText(' 往返测试。')
+  await command('toggle-source-mode')
+  await page.locator('.source-editor .cm-content').waitFor()
+  await command('save-document')
+  await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent?.includes('已保存'))
+  const source = await readFile(note, 'utf8')
+  assert.match(source, /^> \[!NOTE\]/m)
+  for (const fragment of ['tags: [writing, markdown]', '[TOC]', '[!NOTE]', '[^example]', '<div><mark>保留 HTML 源码</mark></div>', '往返测试']) assert.ok(source.includes(fragment), `Round trip lost: ${fragment}`)
+  await command('toggle-source-mode')
+  await page.locator('.document-toc a').first().waitFor()
+  await page.locator('.milkdown-code-block').last().scrollIntoViewIfNeeded()
+  await page.locator('.mermaid-preview svg').waitFor()
+  await command('save-document')
+  await page.waitForFunction(() => !document.title.startsWith('●'))
+  console.log('Front matter, TOC, alerts, footnotes, HTML and Mermaid survived editing and mode switching.')
+
+  await command('preferences')
+  await page.getByLabel('字号', { exact: true }).fill('20')
+  await page.getByLabel('导出时添加目录', { exact: true }).check()
+  await page.getByLabel('使用文档信息中的标题和作者', { exact: true }).check()
+  await page.getByLabel('页码', { exact: true }).check()
+  await page.getByLabel('页眉', { exact: true }).fill('TTypora test')
+  await page.getByRole('button', { name: '完成', exact: true }).click()
+  assert.equal(await page.locator('.document-toc a').count(), 5)
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('ttypora.preferences')).fontSize), 20)
+  await application.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.show(); window.focus() })
+  await page.screenshot({ path: artifact('editor.png'), animations: 'disabled', timeout: 60000 })
+
+  for (const format of ['html', 'pdf', 'png']) {
+    const destination = artifact(`export.${format}`)
+    await application.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }) }, destination)
+    await command(`export-${format}`)
+    await page.waitForFunction((name) => document.querySelector('.statusbar')?.textContent?.includes(name), path.basename(destination), { timeout: 30000 })
+    const bytes = await readFile(destination)
+    if (format === 'html') {
+      const html = bytes.toString('utf8')
+      assert.match(html, /<title>TTypora 功能验收<\/title>/)
+      assert.match(html, /data:font\/woff2;base64/)
+      assert.match(html, /class="katex"/)
+      assert.match(html, /mermaid-export/)
+      assert.match(html, /<nav class="document-toc"/)
+    } else if (format === 'pdf') assert.equal(bytes.subarray(0, 4).toString(), '%PDF')
+    else assert.equal(bytes.subarray(1, 4).toString(), 'PNG')
+    console.log(`${format.toUpperCase()} export produced ${bytes.length} bytes.`)
+  }
+
+  await page.getByRole('button', { name: '管理工作区', exact: true }).click()
+  await page.getByLabel('目标路径').fill('created.md')
+  await page.getByRole('button', { name: '执行', exact: true }).click()
+  await page.waitForFunction(() => document.title.includes('created.md'))
+  assert.equal(await readFile(path.join(workspace, 'created.md'), 'utf8'), '')
+  await command('recent-items')
+  await page.getByRole('dialog', { name: '最近项目' }).waitFor()
+  assert.match(await page.getByRole('dialog').innerText(), /created\.md/)
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '管理 created.md', exact: true }).click()
+  await page.getByLabel('目标路径').fill('renamed.md')
+  await page.getByRole('button', { name: '执行', exact: true }).click()
+  await page.waitForFunction(() => document.title.includes('renamed.md'))
+  await page.getByRole('button', { name: '管理 renamed.md', exact: true }).click()
+  await page.getByLabel('文件操作', { exact: true }).selectOption('delete')
+  await page.getByRole('button', { name: '执行', exact: true }).click()
+  await page.waitForFunction(() => !document.title.includes('renamed.md'))
+  await assert.rejects(readFile(path.join(workspace, 'renamed.md')))
+  await page.getByRole('button', { name: '管理工作区', exact: true }).click()
+  await page.getByLabel('文件操作', { exact: true }).selectOption('restore')
+  await page.getByRole('button', { name: '执行', exact: true }).click()
+  await page.waitForFunction(() => document.title.includes('renamed.md'))
+  console.log('File rename, removal and recovery passed through the UI.')
+
+  await page.locator('.editor-loading').waitFor({ state: 'detached' })
+  await command('preferences')
+  await page.getByLabel('启动时恢复上次文档和文件夹', { exact: true }).check()
+  await page.getByRole('button', { name: '完成', exact: true }).click()
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('ttypora.preferences')).restoreSession === true)
+  await page.reload()
+  await page.waitForFunction(() => document.title.includes('renamed.md'))
+  await page.getByRole('button', { name: '管理工作区', exact: true }).waitFor()
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('ttypora.preferences')).fontSize), 20)
+  console.log('Session and preferences restored after renderer restart.')
+
+  await application.evaluate(async ({ clipboard }) => { globalThis.parityClipboardBackup = await clipboard.read() })
+  await command('copy-markdown')
+  await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent?.includes('已复制文档'))
+  assert.equal(await application.evaluate(({ clipboard }) => clipboard.readText()), '')
+  assert.equal(await page.locator('[role="alert"]').count(), 0)
+  assert.deepEqual(pageErrors, [])
+  console.log('Parity smoke passed: extensions, all native exports, file recovery, recent projects, session restore, preferences and clipboard.')
+} catch (error) {
+  if (page && !page.isClosed()) { console.error(await page.locator('body').innerText()); console.error(await page.locator('.ProseMirror').evaluate((element) => element.innerHTML.slice(0, 2000)).catch(() => 'source mode')); await page.screenshot({ path: artifact('failure.png'), animations: 'disabled', timeout: 60000 }).catch(() => undefined) }
+  throw error
+} finally {
+  if (application) await application.evaluate(async ({ clipboard }) => { if (globalThis.parityClipboardBackup) await clipboard.write(globalThis.parityClipboardBackup) }).catch(() => undefined)
+  if (page && !page.isClosed()) await page.evaluate(() => window.ttypora.confirmWindowClose()).catch(() => undefined)
+  if (application) await application.close().catch(() => undefined)
+  await rm(temporary, { recursive: true, force: true })
+}

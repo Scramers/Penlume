@@ -1,0 +1,108 @@
+import assert from 'node:assert/strict'
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { _electron as electron } from 'playwright'
+
+const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+const temporary = await mkdtemp(path.join(tmpdir(), 'ttypora-production-')), workspace = path.join(temporary, 'notes'), artifacts = path.join(root, 'artifacts')
+await mkdir(workspace); await mkdir(artifacts, { recursive: true })
+const note = path.join(workspace, '创作空间.md'), imported = path.join(workspace, 'Word导入.md'), word = path.join(temporary, 'writing.docx')
+const original = '# 把文字带到更多地方\n\nA **bold** paragraph, a [link](https://example.com) and a local image.\n\n![Pixel](pixel.png)\n\n## 今天的计划\n\n| 项目 | 进度 |\n|---|---|\n| 文档转换 | 完成 |\n\n$x^2 + y^2$\n'
+await writeFile(note, original); await writeFile(path.join(workspace, 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'))
+const customCss = path.join(temporary, '我的墨色.css')
+await writeFile(customCss, '@import "https://example.invalid/network.css"; #write h1 { color: #186cad; } #write p { letter-spacing: .03em; }')
+let application, page
+const errors = []
+try {
+  const packaged = process.env.TTYPORA_PACKAGED_EXE
+  application = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: packaged ? ['--disable-gpu'] : ['--disable-gpu', '.'], cwd: root, env: { ...process.env, TTYPORA_SMOKE_TEST: '1', TTYPORA_USER_DATA_PATH: temporary, TTYPORA_SMOKE_WORKSPACE_PATH: workspace } })
+  page = await application.firstWindow(); page.on('pageerror', (error) => { errors.push(String(error)); console.error(error.stack) }); await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
+  const command = (value) => application.evaluate(({ BrowserWindow }, command) => BrowserWindow.getAllWindows()[0].webContents.send('app:command', command), value)
+  const ready = async () => { await page.locator('.editor-loading').waitFor({ state: 'detached' }); await page.locator('.ProseMirror, .source-editor .cm-content').waitFor() }
+  await ready(); await command('open-workspace'); await page.locator('.file-tree').getByTitle(note, { exact: true }).click(); await ready()
+  const status = await page.evaluate(() => window.ttypora.pandocStatus())
+  assert.equal(status.available, true); assert.equal(status.source, 'bundled'); assert.match(status.version, /^pandoc 3\.12/)
+  await command('document-conversion')
+  const converter = page.getByRole('dialog', { name: '文档转换' })
+  await converter.getByText('pandoc 3.12', { exact: true }).waitFor()
+  await page.screenshot({ path: path.join(artifacts, 'conversion.png') })
+  await application.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }) }, word)
+  await converter.getByRole('button', { name: '导出文档', exact: true }).click()
+  await converter.locator('.conversion-status').filter({ hasText: '已导出' }).waitFor()
+  assert.equal((await readFile(word)).subarray(0, 2).toString(), 'PK')
+  await application.evaluate(({ dialog }, paths) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [paths.word] }); dialog.showSaveDialog = async () => ({ canceled: false, filePath: paths.imported }) }, { word, imported })
+  await converter.getByRole('button', { name: '选择并导入…' }).click()
+  await converter.locator('.conversion-status').filter({ hasText: '已导入' }).waitFor()
+  await page.waitForFunction(() => document.title.includes('Word导入.md'))
+  await converter.getByRole('button', { name: '关闭', exact: true }).last().click(); await ready()
+  const content = await readFile(imported, 'utf8')
+  assert.match(content, /把文字带到更多地方/); assert.match(content, /Word导入.assets/)
+  assert.match(content, /\$x/)
+  await writeFile(path.join(artifacts, 'production-import.md'), content)
+  await page.locator('.ProseMirror img').waitFor()
+  await page.waitForFunction(() => [...document.querySelectorAll('.ProseMirror img')].some((image) => image.complete && image.naturalWidth > 0))
+  assert.equal(await readFile(note, 'utf8'), original)
+  console.log('Bundled Pandoc exports Word and imports a new Markdown tab with durable local images, preserving the original document.')
+
+  await command('document-conversion'); await converter.getByText('pandoc 3.12', { exact: true }).waitFor()
+  await converter.getByLabel('输出格式').selectOption('gfm')
+  await application.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }) }, note)
+  await converter.getByRole('button', { name: '导出文档', exact: true }).click()
+  await converter.getByRole('alert').filter({ hasText: '已打开' }).waitFor()
+  assert.equal(await readFile(note, 'utf8'), original)
+  await converter.getByRole('button', { name: '关闭', exact: true }).last().click()
+  const rejected = await page.evaluate(async () => { try { await window.ttypora.pandocExport({ markdown: 'secret', sourcePath: 'C:\\outside\\unopened.md', suggestedName: 'secret', format: 'docx', options: { toc: false, numberedSections: false, standalone: true, extraArgs: [], useReferenceDocument: false }, excludedPaths: [] }); return false } catch { return true } })
+  assert.equal(rejected, true)
+  console.log('Conversion rejects unauthorized inputs and refuses to overwrite an open document.')
+
+  await command('theme-library')
+  const themes = page.getByRole('dialog', { name: '主题工坊' })
+  await themes.getByRole('button', { name: '预览主题 苔庭', exact: true }).click()
+  await themes.getByRole('button', { name: '设为浅色主题', exact: true }).click()
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('ttypora.theme-library.v1')).lightId === 'builtin-jade')
+  await page.screenshot({ path: path.join(artifacts, 'theme-library-light.png') })
+  await themes.getByRole('button', { name: '深色', exact: true }).click()
+  await themes.getByRole('button', { name: '预览主题 夜林', exact: true }).click()
+  await themes.getByRole('button', { name: '设为深色主题', exact: true }).click()
+  await themes.getByRole('button', { name: '完成', exact: true }).click()
+  for (let i = 0; i < 3 && await page.evaluate(() => document.documentElement.dataset.theme !== 'dark'); i++) await page.locator('.theme-trigger').click()
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark' && getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#7dcbb2')
+  await page.screenshot({ path: path.join(artifacts, 'theme-writing-dark.png') })
+  await command('theme-library')
+  await themes.getByRole('button', { name: '深色', exact: true }).click()
+  await page.screenshot({ path: path.join(artifacts, 'theme-library-dark.png') })
+  await themes.getByRole('button', { name: '浅色', exact: true }).click()
+  await themes.getByLabel('导入 CSS 主题文件').setInputFiles(customCss)
+  await themes.getByLabel('主题名称').fill('墨色手记')
+  await themes.getByRole('button', { name: '保存主题', exact: true }).click()
+  await themes.getByRole('button', { name: '设为浅色主题', exact: true }).click()
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('ttypora.theme-library.v1')))
+  assert.equal(saved.userThemes[0].name, '墨色手记'); assert.doesNotMatch(saved.userThemes[0].css, /@import|example.invalid/)
+  await themes.getByRole('button', { name: '完成', exact: true }).click()
+  for (let i = 0; i < 3 && await page.evaluate(() => document.documentElement.dataset.theme !== 'light'); i++) await page.locator('.theme-trigger').click()
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.ProseMirror h1')).color === 'rgb(24, 108, 173)')
+  await page.screenshot({ path: path.join(artifacts, 'theme-writing.png') })
+  const htmlPath = path.join(artifacts, 'theme-export.html')
+  await application.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }) }, htmlPath)
+  await command('export-html'); await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent?.includes('theme-export.html'))
+  assert.match(await readFile(htmlPath, 'utf8'), /#186cad/)
+  await page.reload(); await ready()
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('ttypora.theme-library.v1')).lightId), saved.lightId)
+  await command('theme-library'); await themes.getByRole('button', { name: '预览主题 墨色手记', exact: true }).click()
+  await themes.getByRole('button', { name: '删除', exact: true }).click(); await themes.getByRole('button', { name: '确认删除', exact: true }).click()
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('ttypora.theme-library.v1')).userThemes.length), 0)
+  await themes.getByRole('button', { name: '完成', exact: true }).click()
+  assert.deepEqual(errors, [])
+  console.log('Theme library supports independent light/dark choices, CSS import/sanitization, editing, application, native export, restart persistence and deletion.')
+  console.log('Production tools acceptance passed.')
+} catch (error) {
+  if (page && !page.isClosed()) { console.error(await page.locator('body').innerText().catch(() => 'unavailable')); await page.screenshot({ path: path.join(artifacts, 'production-tools-failure.png') }).catch(() => undefined) }
+  throw error
+} finally {
+  if (page && !page.isClosed()) await page.evaluate(() => window.ttypora.confirmWindowClose()).catch(() => undefined)
+  if (application) await application.close().catch(() => undefined)
+  await rm(temporary, { recursive: true, force: true })
+}

@@ -1,0 +1,181 @@
+import { cycleAppearance } from './smoke-ui.mjs'
+import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, readFile, realpath, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { _electron as electron } from 'playwright'
+
+const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+const temporary = await mkdtemp(path.join(tmpdir(), 'ttypora-workspace-'))
+const workspace = path.join(temporary, 'workspace')
+const artifacts = path.join(root, 'artifacts')
+await mkdir(workspace); await mkdir(artifacts, { recursive: true })
+const a = path.join(workspace, '写作计划.md'), b = path.join(workspace, '参考资料.md')
+const content = '# 让想法从这里开始\n\n一个安静、有序的写作空间。\n\n## 今天的计划\n\n- [x] 整理零散的想法\n- [ ] 把故事写成一篇文章\n\n> 写作不必急于完成。从第一句话开始，让思路慢慢清晰。\n\n## 下一段旅程\n\n保存每一份灵感，在文字中找到自己的节奏。\n'
+await writeFile(a, content); await writeFile(b, '# 参考资料\n\nBackground original\n')
+await writeFile(path.join(workspace, 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'))
+let app, page
+const pageErrors = []
+const capture = async (options) => { await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window?.show(); window?.focus() }); return page.screenshot({ ...options, animations: 'disabled', timeout: 60000 }) }
+try {
+  const packaged = process.env.TTYPORA_PACKAGED_EXE
+  const testArguments = ['--disable-gpu', '--disable-backgrounding-occluded-windows', '--disable-background-timer-throttling', '--disable-renderer-backgrounding']
+  app = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: packaged ? testArguments : [...testArguments, '.'], cwd: root, env: { ...process.env, TTYPORA_SMOKE_TEST: '1', TTYPORA_USER_DATA_PATH: temporary, TTYPORA_SMOKE_WORKSPACE_PATH: workspace } })
+  page = await app.firstWindow()
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  page.on('pageerror', (error) => pageErrors.push(String(error)))
+  const command = (value) => app.evaluate(({ BrowserWindow }, command) => BrowserWindow.getAllWindows()[0].webContents.send('app:command', command), value)
+  const tabs = page.getByRole('tablist', { name: '打开的文档' })
+  const ready = async () => { await page.locator('.editor-loading').waitFor({ state: 'detached' }); await page.locator('.ProseMirror, .source-editor .cm-content').waitFor() }
+  const open = async (name) => { await page.locator('.file-tree .tree-entry--file').filter({ hasText: name }).click(); await page.waitForFunction((name) => document.title.includes(name), name); await ready() }
+  const source = () => page.locator('.source-editor .cm-content')
+  await ready(); await command('open-workspace'); await open('写作计划.md')
+  await page.locator('.ProseMirror > p').last().click(); await page.keyboard.press('End'); await page.keyboard.insertText(' 最后一次输入')
+  // Open immediately, without allowing the visual-editor debounce to stand in for capture.
+  await open('参考资料.md')
+  assert.equal(await tabs.getByRole('tab').count(), 2)
+  await tabs.getByRole('tab', { name: '写作计划.md' }).click(); await ready()
+  assert.match(await page.locator('.ProseMirror').innerText(), /最后一次输入/)
+  await command('toggle-source-mode'); await source().waitFor()
+  const drafts = await page.evaluate(() => window.ttypora.listRecoveryDrafts())
+  assert.ok(drafts.some((draft) => draft.sourcePath === a && draft.markdown.includes('最后一次输入')))
+  console.log('Tabs preserve independent working copies and flush pending edits on switch.')
+
+  await tabs.getByRole('tab', { name: '参考资料.md' }).click(); await ready()
+  await source().click(); await source().press('Control+End'); await page.keyboard.insertText('\nBackground dirty')
+  await tabs.getByRole('tab', { name: '写作计划.md' }).click(); await ready()
+  await writeFile(b, '# 参考资料\n\nExternal change\n')
+  await page.waitForFunction(() => document.querySelector('.document-tabs')?.textContent?.includes('!'))
+  assert.equal(await page.getByRole('dialog', { name: '文件发生外部变化' }).count(), 0)
+  await tabs.getByRole('tab', { name: '参考资料.md' }).click(); await ready()
+  await page.getByRole('dialog', { name: '文件发生外部变化' }).waitFor()
+  assert.match(await source().innerText(), /Background dirty/)
+  await page.getByRole('button', { name: '放弃本地修改并重新加载' }).click(); await page.getByRole('dialog', { name: '文件发生外部变化' }).waitFor({ state: 'detached' }); await ready()
+  await page.waitForFunction(() => document.querySelector('.source-editor')?.textContent?.includes('External change'))
+  assert.match(await source().innerText(), /External change/)
+  console.log('Background conflicts stay with their own tab; resolving reloads only that document.')
+
+  await source().click(); await source().press('Control+End'); await page.keyboard.insertText('\nSaved background')
+  await tabs.getByRole('tab', { name: '写作计划.md' }).click(); await ready()
+  await command('save-all')
+  await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent?.includes('所有文档已保存'))
+  assert.match(await readFile(a, 'utf8'), /最后一次输入/)
+  assert.match(await readFile(b, 'utf8'), /Saved background/)
+  assert.equal(await tabs.getByLabel('未保存').count(), 0)
+  console.log('Save all writes active and background tabs without changing the active document.')
+  await app.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }) }, b)
+  await command('save-document-as')
+  await page.getByRole('alert').waitFor()
+  assert.match(await page.getByRole('alert').innerText(), /另一个标签/)
+  assert.match(await readFile(b, 'utf8'), /Saved background/)
+  assert.doesNotMatch(await readFile(b, 'utf8'), /最后一次输入/)
+  await page.getByLabel('关闭错误').click()
+  await tabs.getByRole('tab', { name: '参考资料.md' }).click(); await ready()
+  await source().click(); await source().press('Control+End'); await page.keyboard.insertText('Discard me')
+  await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 2, checkboxChecked: false }) })
+  await page.getByRole('button', { name: '关闭 参考资料.md', exact: true }).click()
+  assert.equal(await tabs.getByRole('tab').count(), 2)
+  await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false }) })
+  await page.getByRole('button', { name: '关闭 参考资料.md', exact: true }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.document-tabs [role="tab"]').length === 1)
+  await open('参考资料.md')
+  assert.doesNotMatch(await source().innerText(), /Discard me/)
+  await tabs.getByRole('tab', { name: '写作计划.md' }).click(); await ready()
+  console.log('Save-as refuses another open tab; closing supports cancellation and targeted discard.')
+
+  await command('command-palette')
+  const search = page.getByRole('combobox', { name: '搜索命令' })
+  await search.fill('并排'); await search.press('Enter')
+  await page.locator('.editor-panes--split').waitFor(); await ready()
+  const preview = page.frameLocator('iframe[title="Markdown 实时预览"]')
+  await preview.getByRole('heading', { name: '让想法从这里开始', exact: true }).waitFor()
+  await source().click(); await source().press('Control+End')
+  await page.keyboard.insertText('\n\n![local](pixel.png)\n\n<script>window.previewInjected=true</script>\n\n## 实时更新成功\n')
+  await preview.getByRole('heading', { name: '实时更新成功' }).waitFor()
+  const localImage = preview.getByRole('img', { name: 'local', exact: true })
+  const localImageUrl = await page.evaluate((snapshot) => window.ttypora.resolveImageUrl(snapshot, 'pixel.png'), { documentPath: a, markdown: await readFile(a, 'utf8') })
+  assert.equal(fileURLToPath(localImageUrl), await realpath(path.join(workspace, 'pixel.png')))
+  assert.ok(new URL(localImageUrl).searchParams.get('ttypora-version'))
+  assert.equal(await localImage.getAttribute('src'), localImageUrl)
+  await page.waitForFunction((url) => {
+    const image = document.querySelector('iframe[title="Markdown 实时预览"]')?.contentDocument?.querySelector('img[alt="local"]')
+    return image?.src === url && image.currentSrc === url && image.complete && image.naturalWidth === 1 && image.naturalHeight === 1
+  }, localImageUrl)
+  assert.equal(await localImage.isVisible(), true)
+  assert.equal(await page.evaluate(() => window.previewInjected), undefined)
+  assert.equal(await preview.locator('script').count(), 0)
+  console.log('Command palette, live preview, local images and script sanitization passed.')
+
+  await command('writing-goal')
+  await page.getByLabel('目标字数').fill('500')
+  await page.getByRole('button', { name: '保存目标', exact: true }).click()
+  assert.match(await page.locator('.goal-status').innerText(), /500/)
+  await command('save-all'); await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent?.includes('所有文档已保存'))
+  await capture({ path: path.join(artifacts, 'workspace-split.png') })
+  await command('toggle-source-mode'); await ready()
+  await capture({ path: path.join(artifacts, 'workspace-light.png') })
+  await cycleAppearance(page); await cycleAppearance(page)
+  await capture({ path: path.join(artifacts, 'workspace-dark.png') })
+  await command('command-palette'); await capture({ path: path.join(artifacts, 'workspace-commands.png') }); await page.keyboard.press('Escape')
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(800, 650))
+  await capture({ path: path.join(artifacts, 'workspace-compact.png') })
+  const overflow = await page.evaluate(() => { const rect = document.querySelector('.workbench').getBoundingClientRect(); return rect.right > innerWidth || rect.bottom > innerHeight })
+  assert.equal(overflow, false)
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1180, 820))
+
+  // Reopening the same path must not discard its working copy or duplicate its tab.
+  await command('toggle-source-mode'); await source().waitFor()
+  await source().click(); await source().press('Control+End'); await page.keyboard.insertText('\nReopen preserves me')
+  await open('写作计划.md')
+  assert.match(await source().innerText(), /Reopen preserves me/)
+  assert.equal(await tabs.getByRole('tab').count(), 2)
+  await command('save-all'); await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent?.includes('所有文档已保存'))
+  await page.evaluate(() => { const prefs = JSON.parse(localStorage.getItem('ttypora.preferences')); prefs.restoreSession = true; localStorage.setItem('ttypora.preferences', JSON.stringify(prefs)) })
+  await page.reload(); await ready()
+  await page.waitForFunction(() => document.querySelectorAll('.document-tabs [role="tab"]').length === 2)
+  await tabs.getByRole('tab', { name: '写作计划.md' }).click(); await ready()
+  assert.match(await page.locator('.goal-status').innerText(), /500/)
+  console.log('Document session, writing goal and preferences survive renderer restart.')
+
+  await command('toggle-source-mode'); await source().waitFor()
+  await tabs.getByRole('tab', { name: '参考资料.md' }).click(); await ready()
+  await source().click(); await source().press('Control+End'); await page.keyboard.insertText('\nAuto saved background')
+  await tabs.getByRole('tab', { name: '写作计划.md' }).click(); await ready()
+  await command('preferences')
+  await page.getByLabel('自动保存已命名文档', { exact: true }).check()
+  await page.getByLabel('自动保存间隔（秒）', { exact: true }).fill('5')
+  await page.getByRole('button', { name: '完成', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent?.includes('已保存：参考资料.md'))
+  assert.match(await readFile(b, 'utf8'), /Auto saved background/)
+  assert.match(await page.title(), /写作计划.md/)
+  await command('preferences'); await page.getByLabel('自动保存已命名文档', { exact: true }).uncheck(); await page.getByRole('button', { name: '完成', exact: true }).click()
+  console.log('Autosave includes background documents without interrupting the active tab.')
+
+  // The native close path asks the renderer to capture edits before checking dirty status.
+  await source().click(); await source().press('Control+End'); await page.keyboard.insertText('\nPreserve on exit')
+  await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 3, checkboxChecked: false }) })
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+  await page.waitForFunction(async () => (await window.ttypora.listRecoveryDrafts()).some((draft) => draft.markdown.includes('Preserve on exit')))
+  assert.equal(page.isClosed(), false)
+  await command('new-document'); await page.waitForFunction(() => document.title.includes('未命名文档')); await ready()
+  await page.locator('.source-editor .cm-content').click(); await page.keyboard.insertText('Untitled survives exit')
+  await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false }) })
+  const closed = page.waitForEvent('close')
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+  await closed
+  const draftFiles = await (await import('node:fs/promises')).readdir(path.join(temporary, 'drafts'))
+  const recovered = await Promise.all(draftFiles.filter((name) => name.endsWith('.json')).map(async (name) => JSON.parse(await readFile(path.join(temporary, 'drafts', name), 'utf8'))))
+  assert.ok(recovered.some((item) => item.markdown.includes('Preserve on exit')))
+  assert.ok(recovered.some((item) => item.markdown.includes('Untitled survives exit')))
+  assert.deepEqual(pageErrors, [])
+  console.log('Native close flushes the final edit to recovery before displaying the unsaved prompt.')
+  console.log('Workspace acceptance passed.')
+} catch (error) {
+  if (page && !page.isClosed()) { console.error(await page.locator('body').innerText().catch(() => 'unavailable')); await capture({ path: path.join(artifacts, 'workspace-failure.png') }).catch(() => undefined) }
+  throw error
+} finally {
+  if (page && !page.isClosed()) await page.evaluate(() => window.ttypora.confirmWindowClose()).catch(() => undefined)
+  if (app) await app.close().catch(() => undefined)
+  await rm(temporary, { recursive: true, force: true })
+}

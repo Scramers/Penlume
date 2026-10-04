@@ -1,0 +1,12 @@
+.media-card { margin: 1em 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.media-card__caption { margin-bottom: 10px; font: 500 13px/1.5 var(--font-ui, system-ui); color: var(--text-secondary, var(--text)); overflow-wrap: anywhere; }
+.media-card audio, .media-card video { display: block; width: 100%; max-height: 480px; margin: 0; }
+.media-card video { border-radius: 6px; background: #151515; }
+.media-card__status { margin: 8px 0 0 !important; font: 13px/1.5 var(--font-ui, system-ui); }
+.media-card__status:empty { display: none; }
+.media-card__load { margin-top: 10px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); cursor: pointer; }
+.html-source { margin: 8px 0; }
+.html-source > summary { cursor: pointer; color: var(--text-secondary, var(--text)); font: 13px/1.6 var(--font-ui, system-ui); }
+.html-source textarea { margin-top: 8px; }
+.media-reference-placeholder { break-inside: avoid; border: 1px solid #ccc; border-radius: 8px; padding: 1em; overflow-wrap: anywhere; }
+.media-reference-placeholder img { max-height: 280px; object-fit: contain; }

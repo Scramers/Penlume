@@ -1,0 +1,13 @@
+.outline-title-filter { padding: 4px 8px; }
+.outline-title-filter input { width: 100%; min-width: 0; padding: 7px 9px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; }
+.outline-layout-controls { display: flex; align-items: center; padding: 0 8px 8px; gap: 6px; }
+.outline-layout-controls .outline-flat-toggle { padding: 4px 8px; font-size: 12px; }
+.outline-list .outline-children { padding: 0 0 0 14px; margin: 0; list-style: none; }
+.outline-list .outline-heading-row { display: flex; align-items: center; min-width: 0; }
+.outline-list .outline-heading-row > .outline-toggle { flex: 0 0 24px; width: 24px; padding: 4px; text-align: center; }
+.outline-list .outline-toggle-spacer { flex: 0 0 24px; width: 24px; }
+.outline-list .outline-heading-row > .outline-navigation { flex: 1; min-width: 0; padding: 4px 8px; }
+.outline-list [data-outline-context="true"] > .outline-heading-row > .outline-navigation { font-style: italic; }
+.outline-list .outline-context-marker { flex: 0 0 auto; padding-right: 6px; color: var(--muted); font-size: 11px; }
+.outline-controls-hint { margin: 0 8px 8px; font-size: 11px; color: var(--muted); }
+.outline-list .outline-heading-row > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

@@ -1,0 +1,20 @@
+.ttypora-math-block { margin: 1.2em 0; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); overflow: hidden; color: var(--text); }
+.ttypora-math-block.selected, .ttypora-math-block:focus-within { border-color: var(--accent); }
+.ttypora-math-preview { padding: 14px 20px; overflow-x: auto; }
+.ttypora-math-preview .katex-display { margin: .5em 0; }
+.ttypora-math-source-label { padding: 6px 14px; color: var(--muted); font: 11px/1.5 var(--font-ui, system-ui); border-top: 1px solid var(--border); background: color-mix(in srgb, var(--app-bg) 60%, var(--surface)); }
+.ttypora-math-source { padding: 0 12px; }
+.ttypora-math-diagnostic { display: block; margin: 0; padding: 8px 14px; color: #b44335; background: color-mix(in srgb, #c54d36 8%, var(--surface)); font: 12px/1.6 var(--font-ui, system-ui); overflow-wrap: anywhere; }
+.ttypora-math-diagnostic[hidden] { display: none; }
+.ttypora-math-preview > code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ttypora-math-inline { position: relative; display: inline; }
+.ttypora-math-inline-preview { cursor: pointer; }
+.ttypora-math-inline-edit { margin-left: 4px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--muted); cursor: pointer; font: 10px/1.4 var(--font-ui, system-ui); opacity: 0; }
+.ttypora-math-inline:hover .ttypora-math-inline-edit, .ttypora-math-inline:focus-within .ttypora-math-inline-edit { opacity: 1; }
+.ttypora-math-inline-panel { display: block; max-width: 100%; margin: 6px 0; border: 1px solid var(--accent); border-radius: 7px; background: var(--surface); overflow: hidden; }
+.ttypora-math-inline-panel[hidden] { display: none; }
+.ttypora-math-inline-panel textarea { display: block; box-sizing: border-box; width: 100%; min-height: 50px; border: none; padding: 9px 12px; resize: vertical; color: var(--text); background: var(--surface); font: 13px/1.6 var(--font-mono, Consolas, monospace); }
+.ttypora-code-meta { display: flex; align-items: center; gap: 10px; margin-top: -6px; margin-bottom: 12px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 0 0 8px 8px; color: var(--muted); background: var(--surface); font: 11px/1.5 var(--font-ui, system-ui); }
+.ttypora-code-meta span { flex: 0 0 auto; }
+.ttypora-code-meta input { flex: 1; min-width: 0; border: none; background: transparent; color: var(--text); font: 12px/1.6 var(--font-mono, Consolas, monospace); }
+@media (max-width: 700px) { .ttypora-code-meta { align-items: flex-start; flex-direction: column; gap: 3px; } .ttypora-code-meta input { width: 100%; } }
